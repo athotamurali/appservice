@@ -1,84 +1,61 @@
-provider "azurerm" {
-  features {}
-}
+pipeline {
+    agent any
 
-# Resource Group
-resource "azurerm_resource_group" "rg" {
-  name     = "blue-green-rg"
-  location = "East US"
-}
+    environment {
+        AZURE_SUBSCRIPTION_ID = credentials('azure-service-principal')
+        AZURE_CLIENT_ID = credentials('azure-service-principal')
+        AZURE_CLIENT_SECRET = credentials('azure-service-principal')
+        AZURE_TENANT_ID = credentials('azure-service-principal')
+        RESOURCE_GROUP = "blue-green-rg"
+        APP_NAME = "myapp-bluegreen"
+        ACR_NAME = "myacrregistry"
+        DOCKER_IMAGE = "myacrregistry.azurecr.io/myapp:latest"
+    }
 
-# App Service Plan
-resource "azurerm_app_service_plan" "app_plan" {
-  name                = "appserviceplan"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  kind                = "Linux"
-  reserved            = true
-  sku {
-    tier = "Basic"
-    size = "B1"
-  }
-}
+    stages {
+        stage('Authenticate to Azure') {
+            steps {
+                echo "Logging into Azure..."
+                sh '''
+                az login --service-principal -u $AZURE_CLIENT_ID -p $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID
+                az account set --subscription $AZURE_SUBSCRIPTION_ID
+                '''
+            }
+        }
 
-# Main App Service (Production)
-resource "azurerm_app_service" "app" {
-  name                = "myapp-bluegreen"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  app_service_plan_id = azurerm_app_service_plan.app_plan.id
+        stage('Build Docker Image') {
+            steps {
+                echo "Building Docker image..."
+                sh "docker build -t $DOCKER_IMAGE ."
+            }
+        }
 
-  site_config {
-    linux_fx_version = "DOCKER|nginx"  # Replace with your app's container
-  }
-}
+        stage('Push Image to ACR') {
+            steps {
+                echo "Pushing image to Azure Container Registry..."
+                sh '''
+                az acr login --name $ACR_NAME
+                docker push $DOCKER_IMAGE
+                '''
+            }
+        }
 
-# Blue Deployment Slot
-resource "azurerm_app_service_slot" "blue" {
-  name                = "blue"
-  app_service_name    = azurerm_app_service.app.name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-}
+        stage('Deploy to Green Slot') {
+            steps {
+                echo "Deploying to Green slot..."
+                sh '''
+                az webapp config container set --resource-group $RESOURCE_GROUP --name $APP_NAME --slot green --docker-custom-image-name $DOCKER_IMAGE
+                '''
+            }
+        }
 
-# Green Deployment Slot
-resource "azurerm_app_service_slot" "green" {
-  name                = "green"
-  app_service_name    = azurerm_app_service.app.name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-}
-
-# Traffic Manager for Blue-Green Switching
-resource "azurerm_traffic_manager_profile" "tm" {
-  name                = "blue-green-traffic-manager"
-  resource_group_name = azurerm_resource_group.rg.name
-  traffic_routing_method = "Priority"
-
-  dns_config {
-    relative_name = "bluegreen-app"
-    ttl          = 30
-  }
-
-  monitor_config {
-    protocol = "HTTP"
-    port     = 80
-    path     = "/"
-  }
-}
-
-resource "azurerm_traffic_manager_endpoint" "blue" {
-  name                = "blue-endpoint"
-  profile_id          = azurerm_traffic_manager_profile.tm.id
-  target_resource_id  = azurerm_app_service_slot.blue.id
-  endpoint_status     = "Enabled"
-  priority            = 1
-}
-
-resource "azurerm_traffic_manager_endpoint" "green" {
-  name                = "green-endpoint"
-  profile_id          = azurerm_traffic_manager_profile.tm.id
-  target_resource_id  = azurerm_app_service_slot.green.id
-  endpoint_status     = "Enabled"
-  priority            = 2
+        stage('Swap Green to Blue') {
+            steps {
+                echo "Swapping Green slot with Blue..."
+                sh '''
+                az webapp deployment slot swap --resource-group $RESOURCE_GROUP --name $APP_NAME --slot green
+                '''
+            }
+        }
+    }
 }
