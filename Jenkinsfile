@@ -1,62 +1,82 @@
-pipeline {
-    agent any
-
-    environment {
-        AZURE_SUBSCRIPTION_ID = credentials('azure-subscription-id')  // Updated to lowercase
-        AZURE_CLIENT_ID = credentials('azure-client-id')
-        AZURE_CLIENT_SECRET = credentials('azure-client-secret')
-        AZURE_TENANT_ID = credentials('azure-tenant-id')
-        RESOURCE_GROUP = "blue-green-rg"
-        APP_NAME = "myapp-bluegreen"
-        ACR_NAME = "myacrregistry"
-        DOCKER_IMAGE = "myacrregistry.azurecr.io/myapp:latest"
-        DOCKERFILE_PATH = "Dockerfile" // Update this if your Dockerfile is in a subdirectory (e.g., 'docker/Dockerfile')
-    }
-
-    stages {
-        stage('Authenticate to Azure') {
-            steps {
-                echo "Logging into Azure..."
-                sh '''
-                az login --service-principal -u $AZURE_CLIENT_ID -p $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID
-                az account set --subscription $AZURE_SUBSCRIPTION_ID
-                '''
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                echo "Building Docker image..."
-                sh "docker build -t $DOCKER_IMAGE -f $DOCKERFILE_PATH ."
-            }
-        }
-
-        stage('Push Image to ACR') {
-            steps {
-                echo "Pushing image to Azure Container Registry..."
-                sh '''
-                az acr login --name $ACR_NAME
-                docker push $DOCKER_IMAGE
-                '''
-            }
-        }
-
-        stage('Deploy to Green Slot') {
-            steps {
-                echo "Deploying to Green slot..."
-                sh '''
-                az webapp config container set --resource-group $RESOURCE_GROUP --name $APP_NAME --slot green --docker-custom-image-name $DOCKER_IMAGE
-                '''
-            }
-        }
-
-        stage('Swap Green to Blue') {
-            steps {
-                echo "Swapping Green slot with Blue..."
-                sh '''
-                az webapp deployment slot swap --resource-group $RESOURCE_GROUP --name $APP_NAME --slot green
-                '''
-            }
-        }
-    }
+provider "azurerm" {
+  features {}
 }
+
+variable "resource_group_name" {
+  description = "The name of the resource group"
+}
+
+variable "location" {
+  description = "Azure region"
+}
+
+variable "app_service_plan_name" {
+  description = "Name of the app service plan"
+}
+
+variable "app_service_name" {
+  description = "Name of the app service"
+}
+
+variable "acr_name" {
+  description = "Name of the Azure Container Registry"
+}
+
+variable "app_image" {
+  description = "The Docker image for the app"
+}
+
+# Resource Group
+resource "azurerm_resource_group" "rg" {
+  name     = var.resource_group_name
+  location = var.location
+}
+
+# Azure Container Registry (ACR)
+resource "azurerm_container_registry" "acr" {
+  name                = var.acr_name
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  sku                 = "Basic"
+  admin_enabled       = true
+}
+
+# App Service Plan
+resource "azurerm_app_service_plan" "app_plan" {
+  name                = var.app_service_plan_name
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  kind                = "Linux"
+  reserved            = true
+
+  sku {
+    tier = "Standard"
+    size = "S1"
+  }
+}
+
+# Azure App Service (Blue)
+resource "azurerm_app_service" "app" {
+  name                = var.app_service_name
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  app_service_plan_id = azurerm_app_service_plan.app_plan.id
+
+  site_config {
+    linux_fx_version = "DOCKER|${var.app_image}"
+  }
+}
+
+# Deployment Slot (Green)
+resource "azurerm_app_service_slot" "green_slot" {
+  name                = "green"
+  app_service_name    = azurerm_app_service.app.name
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  app_service_plan_id = azurerm_app_service_plan.app_plan.id
+
+  site_config {
+    linux_fx_version = "DOCKER|${var.app_image}"
+  }
+}
+
