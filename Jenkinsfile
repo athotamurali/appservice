@@ -10,6 +10,7 @@ pipeline {
         APP_NAME = "myapp-bluegreen"
         ACR_NAME = "myacrregistry"
         DOCKER_IMAGE = "myacrregistry.azurecr.io/myapp:latest"
+        DOCKERFILE_PATH = "Dockerfile" // Update this if your Dockerfile is in a subdirectory (e.g., 'docker/Dockerfile')
     }
 
     stages {
@@ -26,7 +27,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 echo "Building Docker image..."
-                sh "docker build -t $DOCKER_IMAGE ."
+                sh "docker build -t $DOCKER_IMAGE -f $DOCKERFILE_PATH ."
             }
         }
 
