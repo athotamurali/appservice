@@ -2,53 +2,59 @@ pipeline {
     agent any
 
     environment {
-        AZURE_CREDENTIALS = credentials('azure-service-principal')  // Jenkins credential
-        APP_NAME = "myapp-bluegreen"
+        AZURE_SUBSCRIPTION_ID = credentials('azure-subscription-id')  // Updated to lowercase
+        AZURE_CLIENT_ID = credentials('azure-client-id')
+        AZURE_CLIENT_SECRET = credentials('azure-client-secret')
+        AZURE_TENANT_ID = credentials('azure-tenant-id')
         RESOURCE_GROUP = "blue-green-rg"
-        SLOT_ACTIVE = "blue"
-        SLOT_INACTIVE = "green"
+        APP_NAME = "myapp-bluegreen"
+        ACR_NAME = "myacrregistry"
+        DOCKER_IMAGE = "myacrregistry.azurecr.io/myapp:latest"
     }
 
     stages {
-        stage('Build') {
+        stage('Authenticate to Azure') {
             steps {
-                echo "Building application..."
-                sh 'docker build -t myapp:latest .'
+                echo "Logging into Azure..."
+                sh '''
+                az login --service-principal -u $AZURE_CLIENT_ID -p $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID
+                az account set --subscription $AZURE_SUBSCRIPTION_ID
+                '''
             }
         }
 
-        stage('Push to Azure Container Registry') {
+        stage('Build Docker Image') {
             steps {
-                echo "Pushing image to Azure..."
-                sh 'az acr login --name myacr'
-                sh 'docker tag myapp:latest myacr.azurecr.io/myapp:latest'
-                sh 'docker push myacr.azurecr.io/myapp:latest'
+                echo "Building Docker image..."
+                sh "docker build -t $DOCKER_IMAGE ."
             }
         }
 
-        stage('Deploy to Inactive Slot') {
+        stage('Push Image to ACR') {
             steps {
-                script {
-                    def activeSlot = sh(script: "az webapp deployment slot list --resource-group ${RESOURCE_GROUP} --name ${APP_NAME} --query \"[?state=='Running'].name\" -o tsv", returnStdout: true).trim()
-                    SLOT_INACTIVE = activeSlot == "blue" ? "green" : "blue"
-                }
-
-                echo "Deploying to ${SLOT_INACTIVE} slot..."
-                sh "az webapp config container set --resource-group ${RESOURCE_GROUP} --name ${APP_NAME} --slot ${SLOT_INACTIVE} --docker-custom-image-name myacr.azurecr.io/myapp:latest"
+                echo "Pushing image to Azure Container Registry..."
+                sh '''
+                az acr login --name $ACR_NAME
+                docker push $DOCKER_IMAGE
+                '''
             }
         }
 
-        stage('Test Deployment') {
+        stage('Deploy to Green Slot') {
             steps {
-                echo "Testing ${SLOT_INACTIVE} slot..."
-                sh "curl -f http://${APP_NAME}-${SLOT_INACTIVE}.azurewebsites.net || exit 1"
+                echo "Deploying to Green slot..."
+                sh '''
+                az webapp config container set --resource-group $RESOURCE_GROUP --name $APP_NAME --slot green --docker-custom-image-name $DOCKER_IMAGE
+                '''
             }
         }
 
-        stage('Swap Slots') {
+        stage('Swap Green to Blue') {
             steps {
-                echo "Swapping slots..."
-                sh "az webapp deployment slot swap --resource-group ${RESOURCE_GROUP} --name ${APP_NAME} --slot ${SLOT_INACTIVE}"
+                echo "Swapping Green slot with Blue..."
+                sh '''
+                az webapp deployment slot swap --resource-group $RESOURCE_GROUP --name $APP_NAME --slot green
+                '''
             }
         }
     }
