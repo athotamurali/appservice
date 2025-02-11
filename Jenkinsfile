@@ -1,82 +1,71 @@
-provider "azurerm" {
-  features {}
+pipeline {
+    agent any
+
+    environment {
+        azure_subscription_id = credentials('azure-service-principal')
+        azure_client_id = credentials('azure-service-principal')
+        azure_client_secret = credentials('azure-service-principal')
+        azure_tenant_id = credentials('azure-service-principal')
+        resource_group = "blue-green-rg"
+        app_name = "myapp-bluegreen"
+        acr_name = "myacrregistry"
+        docker_image = "myacrregistry.azurecr.io/myapp:latest"
+    }
+
+    stages {
+        stage('Authenticate to Azure') {
+            steps {
+                script {
+                    echo "Logging into Azure..."
+                    sh """
+                    az login --service-principal -u \$azure_client_id -p \$azure_client_secret --tenant \$azure_tenant_id
+                    az account set --subscription \$azure_subscription_id
+                    """
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "Building Docker image..."
+                    sh "docker build -t \$docker_image ."
+                }
+            }
+        }
+
+        stage('Push Image to ACR') {
+            steps {
+                script {
+                    echo "Pushing image to Azure Container Registry..."
+                    sh """
+                    az acr login --name \$acr_name
+                    docker push \$docker_image
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Green Slot') {
+            steps {
+                script {
+                    echo "Deploying to Green slot..."
+                    sh """
+                    az webapp config container set --resource-group \$resource_group --name \$app_name --slot green --docker-custom-image-name \$docker_image
+                    """
+                }
+            }
+        }
+
+        stage('Swap Green to Blue') {
+            steps {
+                script {
+                    echo "Swapping Green slot with Blue..."
+                    sh """
+                    az webapp deployment slot swap --resource-group \$resource_group --name \$app_name --slot green
+                    """
+                }
+            }
+        }
+    }
 }
-
-variable "resource_group_name" {
-  description = "The name of the resource group"
-}
-
-variable "location" {
-  description = "Azure region"
-}
-
-variable "app_service_plan_name" {
-  description = "Name of the app service plan"
-}
-
-variable "app_service_name" {
-  description = "Name of the app service"
-}
-
-variable "acr_name" {
-  description = "Name of the Azure Container Registry"
-}
-
-variable "app_image" {
-  description = "The Docker image for the app"
-}
-
-# Resource Group
-resource "azurerm_resource_group" "rg" {
-  name     = var.resource_group_name
-  location = var.location
-}
-
-# Azure Container Registry (ACR)
-resource "azurerm_container_registry" "acr" {
-  name                = var.acr_name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-  sku                 = "Basic"
-  admin_enabled       = true
-}
-
-# App Service Plan
-resource "azurerm_app_service_plan" "app_plan" {
-  name                = var.app_service_plan_name
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  kind                = "Linux"
-  reserved            = true
-
-  sku {
-    tier = "Standard"
-    size = "S1"
-  }
-}
-
-# Azure App Service (Blue)
-resource "azurerm_app_service" "app" {
-  name                = var.app_service_name
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  app_service_plan_id = azurerm_app_service_plan.app_plan.id
-
-  site_config {
-    linux_fx_version = "DOCKER|${var.app_image}"
-  }
-}
-
-# Deployment Slot (Green)
-resource "azurerm_app_service_slot" "green_slot" {
-  name                = "green"
-  app_service_name    = azurerm_app_service.app.name
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  app_service_plan_id = azurerm_app_service_plan.app_plan.id
-
-  site_config {
-    linux_fx_version = "DOCKER|${var.app_image}"
-  }
-}
-
