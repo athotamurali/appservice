@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     environment {
-        azure_subscription_id = credentials('azure-service-principal')
-        azure_client_id = credentials('azure-service-principal')
-        azure_client_secret = credentials('azure-service-principal')
-        azure_tenant_id = credentials('azure-service-principal')
+        azure_subscription_id = credentials('azure-subscription-id')
+        azure_client_id = credentials('azure-client-id')
+        azure_client_secret = credentials('azure-client-secret')
+        azure_tenant_id = credentials('azure-tenant-id')
         resource_group = "blue-green-rg"
         app_name = "myapp-bluegreen"
         acr_name = "myacrregistry"
